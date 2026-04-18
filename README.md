@@ -106,3 +106,9 @@ https://2026-04-18-app-version-5-strategy-s.vercel.app
 ```
 
 For automatic Preview deployments, connect this project folder to a GitHub repository in Vercel and push changes to branches or pull requests.
+
+GitHub repository:
+
+```text
+https://github.com/ZYNNN0925/smc-pro-signal-desk
+```
