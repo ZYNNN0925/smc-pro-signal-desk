@@ -58,6 +58,11 @@ export async function getAdminOverview() {
       status: envSet("TELEGRAM_BOT_TOKEN") ? "ok" : "warning",
     },
     {
+      label: "Telegram webhook secret",
+      detail: envSet("TELEGRAM_WEBHOOK_SECRET") ? "Telegram webhook 會驗證 secret token" : "未設定時仍可接收 Telegram webhook",
+      status: envSet("TELEGRAM_WEBHOOK_SECRET") ? "ok" : "warning",
+    },
+    {
       label: "LINE bot",
       detail: envSet("LINE_CHANNEL_ACCESS_TOKEN") ? "LINE token 已設定" : "未使用 LINE 可先略過",
       status: envSet("LINE_CHANNEL_ACCESS_TOKEN") ? "ok" : "warning",

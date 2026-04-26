@@ -3,6 +3,7 @@ import { BINANCE_SPOT_BASE_URL, marketQuerySchema, parseBinanceKline } from "@/l
 
 export const dynamic = "force-dynamic";
 const MARKET_CACHE_SECONDS = 15;
+const BINANCE_TIMEOUT_MS = 8000;
 
 export async function GET(request: NextRequest) {
   const parsed = marketQuerySchema.safeParse(Object.fromEntries(request.nextUrl.searchParams));
@@ -23,11 +24,12 @@ export async function GET(request: NextRequest) {
   const response = await fetch(url, {
     headers: { accept: "application/json" },
     next: { revalidate: MARKET_CACHE_SECONDS },
-  });
+    signal: AbortSignal.timeout(BINANCE_TIMEOUT_MS),
+  }).catch(() => null);
 
-  if (!response.ok) {
+  if (!response?.ok) {
     return NextResponse.json(
-      { ok: false, error: "binance candles request failed", status: response.status },
+      { ok: false, error: "binance candles request failed", status: response?.status || 504 },
       { status: 502 },
     );
   }

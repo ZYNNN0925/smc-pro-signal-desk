@@ -2,9 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { sendSignalNotifications } from "@/lib/notifications";
 import { normalizeTradingViewPayload, signalToDatabaseRow, tradingViewSignalSchema } from "@/lib/tradingview";
+import { anySecretMatches } from "@/lib/security";
 import type { StrategySignal } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+const MAX_WEBHOOK_BODY_BYTES = 16000;
 
 function cooldownMinutes() {
   const value = Number(process.env.TRADINGVIEW_WEBHOOK_COOLDOWN_MINUTES || 10);
@@ -71,6 +73,15 @@ export async function POST(request: NextRequest) {
   const rawBody = await request.text();
   let body: unknown;
 
+  if (Buffer.byteLength(rawBody, "utf8") > MAX_WEBHOOK_BODY_BYTES) {
+    await logSignalEvent({
+      payload: { size: Buffer.byteLength(rawBody, "utf8") },
+      status: "failed",
+      error: "payload too large",
+    });
+    return NextResponse.json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+
   try {
     body = JSON.parse(rawBody);
   } catch {
@@ -92,7 +103,7 @@ export async function POST(request: NextRequest) {
   const headerSecret = request.headers.get("x-webhook-secret");
   const payloadSecret = parsed.data.secret;
 
-  if (expectedSecret && headerSecret !== expectedSecret && payloadSecret !== expectedSecret) {
+  if (!anySecretMatches(expectedSecret, [headerSecret, payloadSecret])) {
     await logSignalEvent({
       signalId: parsed.data.signal_id,
       payload: body,

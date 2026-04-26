@@ -1,8 +1,18 @@
 import crypto from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
+import { timingSafeEqualText } from "@/lib/security";
 import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 export const dynamic = "force-dynamic";
+const MAX_LINE_BODY_BYTES = 32000;
+
+type LineWebhookBody = {
+  events?: Array<{
+    source?: {
+      userId?: string;
+    };
+  }>;
+};
 
 function isValidLineSignature(rawBody: string, signature: string | null) {
   const secret = process.env.LINE_CHANNEL_SECRET;
@@ -11,22 +21,28 @@ function isValidLineSignature(rawBody: string, signature: string | null) {
     return true;
   }
 
-  if (!signature) {
-    return false;
-  }
-
   const digest = crypto.createHmac("sha256", secret).update(rawBody).digest("base64");
-  return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(signature));
+  return timingSafeEqualText(signature, digest);
 }
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
 
+  if (Buffer.byteLength(rawBody, "utf8") > MAX_LINE_BODY_BYTES) {
+    return NextResponse.json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+
   if (!isValidLineSignature(rawBody, request.headers.get("x-line-signature"))) {
     return NextResponse.json({ ok: false, error: "invalid signature" }, { status: 401 });
   }
 
-  const body = JSON.parse(rawBody);
+  let body: LineWebhookBody;
+
+  try {
+    body = JSON.parse(rawBody || "{}");
+  } catch {
+    return NextResponse.json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
   const supabase = getSupabaseAdmin();
 
   if (supabase) {

@@ -45,14 +45,23 @@ export function SignalChart() {
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
+    let activeController: AbortController | null = null;
 
     async function loadMarketData() {
+      if (inFlight) {
+        return;
+      }
+
+      inFlight = true;
       setStatus("載入 Binance 行情");
+      const controller = new AbortController();
+      activeController = controller;
 
       try {
         const [candleResponse, tickerResponse] = await Promise.all([
-          fetch(`/api/market/candles?${query}`, { cache: "no-store" }),
-          fetch(`/api/market/ticker?symbol=${symbol}`, { cache: "no-store" }),
+          fetch(`/api/market/candles?${query}`, { cache: "no-store", signal: controller.signal }),
+          fetch(`/api/market/ticker?symbol=${symbol}`, { cache: "no-store", signal: controller.signal }),
         ]);
 
         const candleData = (await candleResponse.json()) as CandleResponse;
@@ -82,9 +91,14 @@ export function SignalChart() {
         }
 
         setStatus(`Binance Spot ${symbol} ${interval}`);
-      } catch {
+      } catch (error) {
         if (!cancelled) {
-          setStatus("無法連線到 Binance 行情");
+          setStatus(error instanceof DOMException && error.name === "AbortError" ? "行情更新已取消" : "無法連線到 Binance 行情");
+        }
+      } finally {
+        inFlight = false;
+        if (activeController === controller) {
+          activeController = null;
         }
       }
     }
@@ -94,6 +108,7 @@ export function SignalChart() {
 
     return () => {
       cancelled = true;
+      activeController?.abort();
       window.clearInterval(timer);
     };
   }, [query, symbol, interval]);

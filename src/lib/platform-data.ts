@@ -275,7 +275,13 @@ function symbolPerformance(trades: TradeRecord[]) {
 
   for (const trade of trades) {
     const symbol = trade.symbol.toUpperCase();
-    grouped.set(symbol, [...(grouped.get(symbol) || []), trade]);
+    const rows = grouped.get(symbol);
+
+    if (rows) {
+      rows.push(trade);
+    } else {
+      grouped.set(symbol, [trade]);
+    }
   }
 
   return [...grouped.entries()]
@@ -368,8 +374,7 @@ function buildDashboardMetrics(
 }
 
 export async function getDashboardData(userId: string, isDemo = false) {
-  const [signals, signalHistory, trades, channels, notifications] = await Promise.all([
-    getRecentSignals(20),
+  const [signalHistory, trades, channels, notifications] = await Promise.all([
     fetchSignals(500),
     getUserTrades(userId, isDemo, 500),
     getUserNotificationChannels(userId, isDemo),
@@ -379,7 +384,7 @@ export async function getDashboardData(userId: string, isDemo = false) {
   const analytics = buildStrategyAnalytics(signalHistory, trades);
 
   return {
-    signals,
+    signals: signalHistory.slice(0, 20),
     trades,
     channels,
     notifications,

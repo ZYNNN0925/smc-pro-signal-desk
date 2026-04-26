@@ -18,6 +18,8 @@ type StoredNotificationChannel = {
   enabled: boolean;
 };
 
+const DELIVERY_TIMEOUT_MS = 8000;
+
 function priceLine(label: string, value: number) {
   return `${label}: ${Number.isFinite(value) ? value : "-"}`;
 }
@@ -48,7 +50,10 @@ async function fetchWithRetry(url: string, init: RequestInit, retries = 1) {
 
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      const response = await fetch(url, init);
+      const response = await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(DELIVERY_TIMEOUT_MS),
+      });
       lastResponse = response;
 
       if (response.ok || response.status < 500) {
