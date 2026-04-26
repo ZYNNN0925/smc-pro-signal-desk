@@ -1,5 +1,6 @@
 //@version=5
-strategy("SMC PRO - Webhook Ready v0.3", overlay=true, pyramiding=0,
+strategy("SMC PRO - Webhook Ready v0.4", overlay=true, pyramiding=0,
+     process_orders_on_close=true,
      default_qty_type=strategy.percent_of_equity,
      default_qty_value=1,
      commission_type=strategy.commission.percent,
@@ -9,26 +10,37 @@ strategy("SMC PRO - Webhook Ready v0.3", overlay=true, pyramiding=0,
 // ===== Core settings =====
 pivot_len = input.int(5, "Pivot Length", minval=1)
 rr = input.float(2.0, "Final TP RR", minval=0.5, step=0.1)
-tp1_rr = input.float(1.0, "Payload TP1 RR", minval=0.25, step=0.25)
+tp1_rr = input.float(1.0, "TP1 RR", minval=0.25, step=0.25)
+use_partial_tp = input.bool(true, "Use TP1 Partial Exit")
+tp1_qty_pct = input.float(50, "TP1 Exit Qty %", minval=1, maxval=99)
 ema_len = input.int(50, "Local EMA Length", minval=1)
+use_ema_slope_filter = input.bool(true, "Use EMA Slope Filter")
+ema_slope_len = input.int(3, "EMA Slope Lookback", minval=1)
 max_wait = input.int(10, "Max Bars After Sweep", minval=1)
 min_bars_after_sweep = input.int(1, "Min Bars After Sweep", minval=0)
 body_ratio = input.float(0.55, "Strong Candle Body %", minval=0.1, maxval=1.0)
 webhook_secret = input.string("change-me", "Webhook Secret")
+send_alert_function = input.bool(true, "Send alert() Webhook")
 
 // ===== Higher timeframe filter =====
-use_htf_filter = input.bool(true, "Use HTF Trend Filter")
+use_htf_filter = input.bool(true, "Use Confirmed HTF Trend Filter")
 htf = input.timeframe("60", "HTF Trend Timeframe")
 htf_ema_len = input.int(100, "HTF EMA Length", minval=1)
 
-// ===== Session and volatility filters =====
+// ===== Session, volatility and quality filters =====
 use_session_filter = input.bool(false, "Use Trade Session Filter")
 trade_session = input.session("0800-2300", "Trade Session")
 atr_len = input.int(14, "ATR Length", minval=1)
 atr_buffer = input.float(0.2, "ATR SL Buffer", minval=0.0, step=0.1)
 sweep_atr_buffer = input.float(0.05, "Sweep ATR Buffer", minval=0.0, step=0.01)
+choch_atr_buffer = input.float(0.02, "CHoCH ATR Break Buffer", minval=0.0, step=0.01)
 min_atr_pct = input.float(0.05, "Min ATR %", minval=0.0, step=0.01)
 max_atr_pct = input.float(2.0, "Max ATR %", minval=0.1, step=0.1)
+use_displacement_filter = input.bool(true, "Use Displacement Filter")
+displacement_atr_mult = input.float(0.35, "Min Candle Range ATR", minval=0.0, step=0.05)
+use_volume_filter = input.bool(false, "Use Volume Filter")
+volume_len = input.int(20, "Volume MA Length", minval=1)
+min_volume_mult = input.float(0.8, "Min Volume x MA", minval=0.0, step=0.1)
 
 // ===== Risk filters =====
 min_stop_pct = input.float(0.05, "Min Stop %", minval=0.0, step=0.01)
@@ -40,20 +52,23 @@ ema = ta.ema(close, ema_len)
 atr = ta.atr(atr_len)
 atr_pct = close != 0 ? atr / close * 100 : na
 
-htf_close = request.security(syminfo.tickerid, htf, close, barmerge.gaps_off, barmerge.lookahead_off)
-htf_ema = request.security(syminfo.tickerid, htf, ta.ema(close, htf_ema_len), barmerge.gaps_off, barmerge.lookahead_off)
+// Use the previous confirmed HTF candle to avoid realtime HTF repaint.
+htf_close = request.security(syminfo.tickerid, htf, close[1], barmerge.gaps_off, barmerge.lookahead_on)
+htf_ema = request.security(syminfo.tickerid, htf, ta.ema(close, htf_ema_len)[1], barmerge.gaps_off, barmerge.lookahead_on)
 htf_bull = htf_close > htf_ema
 htf_bear = htf_close < htf_ema
-htf_trend = htf_bull ? "bull" : htf_bear ? "bear" : "neutral"
+htf_trend = not use_htf_filter ? "disabled" : htf_bull ? "bull" : htf_bear ? "bear" : "neutral"
 
-local_bull = close > ema
-local_bear = close < ema
+local_bull = close > ema and (not use_ema_slope_filter or ema > ema[ema_slope_len])
+local_bear = close < ema and (not use_ema_slope_filter or ema < ema[ema_slope_len])
 trend_long_ok = local_bull and (not use_htf_filter or htf_bull)
 trend_short_ok = local_bear and (not use_htf_filter or htf_bear)
 
 // ===== Market quality filters =====
 in_session = not use_session_filter or not na(time(timeframe.period, trade_session))
 vol_ok = not na(atr_pct) and atr_pct >= min_atr_pct and atr_pct <= max_atr_pct
+volume_ma = ta.sma(volume, volume_len)
+volume_ok = not use_volume_filter or (not na(volume_ma) and volume >= volume_ma * min_volume_mult)
 
 // ===== Pivot structure =====
 ph = ta.pivothigh(high, pivot_len, pivot_len)
@@ -72,8 +87,9 @@ if not na(pl)
 range_size = math.max(high - low, syminfo.mintick)
 body_size = math.abs(close - open)
 body_strength = body_size / range_size
-strong_bull = close > open and body_strength >= body_ratio
-strong_bear = close < open and body_strength >= body_ratio
+displacement_ok = not use_displacement_filter or (not na(atr) and range_size >= atr * displacement_atr_mult)
+strong_bull = close > open and body_strength >= body_ratio and displacement_ok
+strong_bear = close < open and body_strength >= body_ratio and displacement_ok
 
 // ===== Sweep state machine =====
 var bool swept_low = false
@@ -82,102 +98,169 @@ var int swept_low_bar = na
 var int swept_high_bar = na
 var float swept_low_price = na
 var float swept_high_price = na
+var float swept_low_atr = na
+var float swept_high_atr = na
+var float long_choch_level = na
+var float short_choch_level = na
 
-new_sweep_low = not na(swing_low) and low < swing_low - atr * sweep_atr_buffer and close > swing_low
-new_sweep_high = not na(swing_high) and high > swing_high + atr * sweep_atr_buffer and close < swing_high
+new_sweep_low = not na(swing_low) and not na(swing_high) and low < swing_low - atr * sweep_atr_buffer and close > swing_low
+new_sweep_high = not na(swing_high) and not na(swing_low) and high > swing_high + atr * sweep_atr_buffer and close < swing_high
 
 if new_sweep_low
     swept_low := true
     swept_low_bar := bar_index
     swept_low_price := low
+    swept_low_atr := atr
+    long_choch_level := swing_high
     swept_high := false
+    swept_high_bar := na
+    swept_high_price := na
+    swept_high_atr := na
+    short_choch_level := na
 
 if new_sweep_high
     swept_high := true
     swept_high_bar := bar_index
     swept_high_price := high
+    swept_high_atr := atr
+    short_choch_level := swing_low
     swept_low := false
+    swept_low_bar := na
+    swept_low_price := na
+    swept_low_atr := na
+    long_choch_level := na
 
 if swept_low and not na(swept_low_bar) and bar_index - swept_low_bar > max_wait
     swept_low := false
+    swept_low_bar := na
+    swept_low_price := na
+    swept_low_atr := na
+    long_choch_level := na
 
 if swept_high and not na(swept_high_bar) and bar_index - swept_high_bar > max_wait
     swept_high := false
+    swept_high_bar := na
+    swept_high_price := na
+    swept_high_atr := na
+    short_choch_level := na
 
 sweep_low_ready = swept_low and not na(swept_low_bar) and bar_index - swept_low_bar >= min_bars_after_sweep
 sweep_high_ready = swept_high and not na(swept_high_bar) and bar_index - swept_high_bar >= min_bars_after_sweep
 
 // ===== CHoCH =====
-bull_choch = sweep_low_ready and not na(swing_high) and close > swing_high and close[1] <= swing_high
-bear_choch = sweep_high_ready and not na(swing_low) and close < swing_low and close[1] >= swing_low
+bull_break_level = not na(long_choch_level) ? long_choch_level + atr * choch_atr_buffer : na
+bear_break_level = not na(short_choch_level) ? short_choch_level - atr * choch_atr_buffer : na
+bull_choch = sweep_low_ready and not na(bull_break_level) and close > bull_break_level and close[1] <= nz(bull_break_level[1], bull_break_level)
+bear_choch = sweep_high_ready and not na(bear_break_level) and close < bear_break_level and close[1] >= nz(bear_break_level[1], bear_break_level)
 
 // ===== SL / TP / risk =====
-long_sl = swept_low_price - atr * atr_buffer
-short_sl = swept_high_price + atr * atr_buffer
+safe_tp1_rr = math.min(tp1_rr, rr)
 
-long_risk = close - long_sl
-short_risk = short_sl - close
-long_stop_pct = close != 0 ? long_risk / close * 100 : na
-short_stop_pct = close != 0 ? short_risk / close * 100 : na
+long_entry = close
+short_entry = close
+long_sl = swept_low and not na(swept_low_price) ? swept_low_price - nz(swept_low_atr, atr) * atr_buffer : na
+short_sl = swept_high and not na(swept_high_price) ? swept_high_price + nz(swept_high_atr, atr) * atr_buffer : na
+
+long_risk = not na(long_sl) ? long_entry - long_sl : na
+short_risk = not na(short_sl) ? short_sl - short_entry : na
+long_stop_pct = not na(long_risk) and long_entry != 0 ? long_risk / long_entry * 100 : na
+short_stop_pct = not na(short_risk) and short_entry != 0 ? short_risk / short_entry * 100 : na
 
 risk_ok_long = not na(long_stop_pct) and long_risk > syminfo.mintick and long_stop_pct >= min_stop_pct and long_stop_pct <= max_stop_pct
 risk_ok_short = not na(short_stop_pct) and short_risk > syminfo.mintick and short_stop_pct >= min_stop_pct and short_stop_pct <= max_stop_pct
 
-long_tp1 = close + long_risk * tp1_rr
-short_tp1 = close - short_risk * tp1_rr
-long_tp = close + long_risk * rr
-short_tp = close - short_risk * rr
+long_tp1 = not na(long_risk) ? long_entry + long_risk * safe_tp1_rr : na
+short_tp1 = not na(short_risk) ? short_entry - short_risk * safe_tp1_rr : na
+long_tp = not na(long_risk) ? long_entry + long_risk * rr : na
+short_tp = not na(short_risk) ? short_entry - short_risk * rr : na
 
 // ===== Cooldown =====
 var int last_signal_bar = na
 cooldown_ok = na(last_signal_bar) or bar_index - last_signal_bar >= cooldown_bars
 
 // ===== Conditions =====
-long_condition = barstate.isconfirmed and cooldown_ok and in_session and vol_ok and trend_long_ok and bull_choch and strong_bull and risk_ok_long
-short_condition = barstate.isconfirmed and cooldown_ok and in_session and vol_ok and trend_short_ok and bear_choch and strong_bear and risk_ok_short
+long_condition = barstate.isconfirmed and strategy.position_size == 0 and cooldown_ok and in_session and vol_ok and volume_ok and trend_long_ok and bull_choch and strong_bull and risk_ok_long
+short_condition = barstate.isconfirmed and strategy.position_size == 0 and cooldown_ok and in_session and vol_ok and volume_ok and trend_short_ok and bear_choch and strong_bear and risk_ok_short
 
-long_confidence = math.min(95, 50 + (use_htf_filter and htf_bull ? 10 : 0) + (vol_ok ? 10 : 0) + (strong_bull ? 10 : 0) + (risk_ok_long ? 10 : 0) + (in_session ? 5 : 0))
-short_confidence = math.min(95, 50 + (use_htf_filter and htf_bear ? 10 : 0) + (vol_ok ? 10 : 0) + (strong_bear ? 10 : 0) + (risk_ok_short ? 10 : 0) + (in_session ? 5 : 0))
+long_confidence = math.min(95, 45 + (trend_long_ok ? 15 : 0) + (vol_ok ? 10 : 0) + (volume_ok ? 5 : 0) + (strong_bull ? 10 : 0) + (risk_ok_long ? 10 : 0) + (in_session ? 5 : 0))
+short_confidence = math.min(95, 45 + (trend_short_ok ? 15 : 0) + (vol_ok ? 10 : 0) + (volume_ok ? 5 : 0) + (strong_bear ? 10 : 0) + (risk_ok_short ? 10 : 0) + (in_session ? 5 : 0))
 
-build_payload(side, sl, tp1, tp, risk_pct, confidence, reasons) =>
-    '{"secret":"' + webhook_secret +
-     '","event":"signal_open"' +
-     ',"signal_id":"SMC_PRO:' + syminfo.tickerid + ':' + timeframe.period + ':' + str.tostring(time) + ':' + side +
-     '","strategy":"SMC_PRO","version":"0.3.0","symbol":"' + syminfo.tickerid +
-     '","timeframe":"' + timeframe.period +
-     '","side":"' + side +
-     '","entry":' + str.tostring(close) +
-     ',"sl":' + str.tostring(sl) +
-     ',"tp":' + str.tostring(tp) +
-     ',"tp1":' + str.tostring(tp1) +
-     ',"tp2":' + str.tostring(tp) +
-     ',"rr":' + str.tostring(rr) +
-     ',"risk_pct":' + str.tostring(risk_pct) +
-     ',"atr_pct":' + str.tostring(atr_pct) +
-     ',"htf_trend":"' + htf_trend +
-     '","session":"' + (use_session_filter ? trade_session : "all") +
-     '","confidence":' + str.tostring(confidence) +
-     ',"reason":' + reasons +
-     ',"created_at":' + str.tostring(time) + '}'
+json_escape(value) =>
+    str.replace_all(str.replace_all(value, "\\", "\\\\"), "\"", "\\\"")
 
-if long_condition and strategy.position_size == 0
-    payload = build_payload("long", long_sl, long_tp1, long_tp, long_stop_pct, long_confidence, '["Sweep Low","Bullish CHoCH","HTF/EMA Bull","Strong Bull Candle","Risk OK"]')
+json_text(value) =>
+    "\"" + json_escape(value) + "\""
+
+json_num(value) =>
+    str.tostring(value, "#.########")
+
+build_payload(side, entry, sl, tp1, tp, risk_pct, confidence, reasons) =>
+    signal_id = "SMC_PRO:" + syminfo.tickerid + ":" + timeframe.period + ":" + str.tostring(time_close) + ":" + side
+    "{" +
+     "\"secret\":" + json_text(webhook_secret) +
+     ",\"event\":\"signal_open\"" +
+     ",\"signal_id\":" + json_text(signal_id) +
+     ",\"strategy\":\"SMC_PRO\"" +
+     ",\"version\":\"0.4.0\"" +
+     ",\"symbol\":" + json_text(syminfo.tickerid) +
+     ",\"timeframe\":" + json_text(timeframe.period) +
+     ",\"side\":" + json_text(side) +
+     ",\"entry\":" + json_num(entry) +
+     ",\"sl\":" + json_num(sl) +
+     ",\"tp\":" + json_num(tp) +
+     ",\"tp1\":" + json_num(tp1) +
+     ",\"tp2\":" + json_num(tp) +
+     ",\"rr\":" + json_num(rr) +
+     ",\"risk_pct\":" + json_num(risk_pct) +
+     ",\"atr_pct\":" + json_num(atr_pct) +
+     ",\"htf_trend\":" + json_text(htf_trend) +
+     ",\"session\":" + json_text(use_session_filter ? trade_session : "all") +
+     ",\"confidence\":" + str.tostring(confidence) +
+     ",\"reason\":" + reasons +
+     ",\"created_at\":" + str.tostring(time_close) +
+     "}"
+
+long_reasons = "[\"Sweep Low\",\"Bullish CHoCH\",\"Confirmed HTF/EMA Bull\",\"Strong Displacement Candle\",\"Risk OK\"]"
+short_reasons = "[\"Sweep High\",\"Bearish CHoCH\",\"Confirmed HTF/EMA Bear\",\"Strong Displacement Candle\",\"Risk OK\"]"
+
+if long_condition
+    payload = build_payload("long", long_entry, long_sl, long_tp1, long_tp, long_stop_pct, long_confidence, long_reasons)
     strategy.entry("Long", strategy.long, alert_message=payload)
-    strategy.exit("L Exit", "Long", stop=long_sl, limit=long_tp)
-    alert(payload, alert.freq_once_per_bar_close)
+    if use_partial_tp and safe_tp1_rr < rr
+        strategy.exit("L TP1", "Long", stop=long_sl, limit=long_tp1, qty_percent=tp1_qty_pct)
+        strategy.exit("L TP2", "Long", stop=long_sl, limit=long_tp, qty_percent=100 - tp1_qty_pct)
+    else
+        strategy.exit("L Exit", "Long", stop=long_sl, limit=long_tp)
+    if send_alert_function
+        alert(payload, alert.freq_once_per_bar_close)
     swept_low := false
+    swept_low_bar := na
+    swept_low_price := na
+    swept_low_atr := na
+    long_choch_level := na
     last_signal_bar := bar_index
 
-if short_condition and strategy.position_size == 0
-    payload = build_payload("short", short_sl, short_tp1, short_tp, short_stop_pct, short_confidence, '["Sweep High","Bearish CHoCH","HTF/EMA Bear","Strong Bear Candle","Risk OK"]')
+if short_condition
+    payload = build_payload("short", short_entry, short_sl, short_tp1, short_tp, short_stop_pct, short_confidence, short_reasons)
     strategy.entry("Short", strategy.short, alert_message=payload)
-    strategy.exit("S Exit", "Short", stop=short_sl, limit=short_tp)
-    alert(payload, alert.freq_once_per_bar_close)
+    if use_partial_tp and safe_tp1_rr < rr
+        strategy.exit("S TP1", "Short", stop=short_sl, limit=short_tp1, qty_percent=tp1_qty_pct)
+        strategy.exit("S TP2", "Short", stop=short_sl, limit=short_tp, qty_percent=100 - tp1_qty_pct)
+    else
+        strategy.exit("S Exit", "Short", stop=short_sl, limit=short_tp)
+    if send_alert_function
+        alert(payload, alert.freq_once_per_bar_close)
     swept_high := false
+    swept_high_bar := na
+    swept_high_price := na
+    swept_high_atr := na
+    short_choch_level := na
     last_signal_bar := bar_index
 
 plot(ema, "Local EMA", color=color.orange)
-plot(htf_ema, "HTF EMA", color=color.new(color.blue, 35))
+plot(htf_ema, "Confirmed HTF EMA", color=color.new(color.blue, 35))
+plot(bull_break_level, "Long CHoCH Level", color=color.new(color.green, 70), style=plot.style_linebr)
+plot(bear_break_level, "Short CHoCH Level", color=color.new(color.red, 70), style=plot.style_linebr)
 plotshape(new_sweep_low, "Sweep Low", shape.triangleup, location.belowbar, color=color.green, size=size.tiny)
 plotshape(new_sweep_high, "Sweep High", shape.triangledown, location.abovebar, color=color.red, size=size.tiny)
 plotshape(bull_choch, "Bull CHoCH", shape.circle, location.belowbar, color=color.new(color.green, 0), size=size.tiny)

@@ -113,7 +113,7 @@ create table if not exists public.strategy_daily_metrics (
 );
 
 insert into public.strategies (code, name, version, access_mode)
-values ('SMC_PRO', 'SMC PRO', '0.3.0', 'login')
+values ('SMC_PRO', 'SMC PRO', '0.4.0', 'login')
 on conflict (code) do update set version = excluded.version;
 
 create index if not exists profiles_user_id_idx on public.profiles(user_id);
