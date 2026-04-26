@@ -32,7 +32,7 @@ export const tradingViewSignalSchema = z.object({
   secret: z.string().optional(),
   signal_id: z.string().min(6).optional(),
   strategy: z.string().default("SMC_PRO"),
-  version: z.string().default("0.1.0"),
+  version: z.string().default("0.5.0"),
   symbol: z.string().min(2),
   timeframe: z.string().min(1),
   side: z.enum(["long", "short"]),

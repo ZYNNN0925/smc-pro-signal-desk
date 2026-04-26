@@ -5,7 +5,7 @@ export const demoSignals: StrategySignal[] = [
     id: "sig_001",
     signalId: "SMC_PRO:BINANCE:BTCUSDT:5m:demo:long",
     strategy: "SMC PRO",
-    version: "0.4.0",
+    version: "0.5.0",
     symbol: "BINANCE:BTCUSDT",
     timeframe: "5m",
     side: "long",
@@ -22,7 +22,7 @@ export const demoSignals: StrategySignal[] = [
     id: "sig_002",
     signalId: "SMC_PRO:BINANCE:ETHUSDT:15m:demo:short",
     strategy: "SMC PRO",
-    version: "0.4.0",
+    version: "0.5.0",
     symbol: "BINANCE:ETHUSDT",
     timeframe: "15m",
     side: "short",
@@ -39,7 +39,7 @@ export const demoSignals: StrategySignal[] = [
     id: "sig_003",
     signalId: "SMC_PRO:BINANCE:SOLUSDT:1h:demo:short",
     strategy: "SMC PRO",
-    version: "0.4.0",
+    version: "0.5.0",
     symbol: "BINANCE:SOLUSDT",
     timeframe: "1h",
     side: "short",
@@ -98,7 +98,7 @@ export const demoTrades: TradeRecord[] = [
 export const demoMetrics: StrategyMetric[] = [
   { label: "今日訊號", value: "0", detail: "等待 TradingView webhook", tone: "neutral" },
   { label: "資料源", value: "Binance", detail: "Spot public market data", tone: "good" },
-  { label: "策略版本", value: "0.4.0", detail: "Confirmed HTF / TP1 / risk filters", tone: "good" },
+  { label: "策略版本", value: "0.5.0", detail: "ICT FVG / MSS / PD filters", tone: "good" },
   { label: "最大回撤", value: "-", detail: "累積交易後計算", tone: "warning" },
 ];
 
