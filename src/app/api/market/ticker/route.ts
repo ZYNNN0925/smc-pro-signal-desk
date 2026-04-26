@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BINANCE_SPOT_BASE_URL, marketQuerySchema } from "@/lib/binance-market";
+import { marketQuerySchema } from "@/lib/binance-market";
+import { fetchBinanceMarketJson } from "@/lib/binance-market-server";
 
 export const dynamic = "force-dynamic";
 const MARKET_CACHE_SECONDS = 10;
@@ -16,23 +17,20 @@ export async function GET(request: NextRequest) {
   }
 
   const { symbol } = parsed.data;
-  const url = new URL("/api/v3/ticker/price", BINANCE_SPOT_BASE_URL);
-  url.searchParams.set("symbol", symbol);
+  const result = await fetchBinanceMarketJson<{ symbol: string; price: string }>(
+    "/api/v3/ticker/price",
+    { symbol },
+    { cacheSeconds: MARKET_CACHE_SECONDS, timeoutMs: BINANCE_TIMEOUT_MS },
+  );
 
-  const response = await fetch(url, {
-    headers: { accept: "application/json" },
-    next: { revalidate: MARKET_CACHE_SECONDS },
-    signal: AbortSignal.timeout(BINANCE_TIMEOUT_MS),
-  }).catch(() => null);
-
-  if (!response?.ok) {
+  if (!result.ok) {
     return NextResponse.json(
-      { ok: false, error: "binance ticker request failed", status: response?.status || 504 },
+      { ok: false, error: "binance ticker request failed", status: result.status, source: result.source },
       { status: 502 },
     );
   }
 
-  const data = (await response.json()) as { symbol: string; price: string };
+  const data = result.data;
 
   return NextResponse.json(
     {
@@ -40,7 +38,7 @@ export async function GET(request: NextRequest) {
       ticker: {
         symbol: data.symbol,
         price: Number(data.price),
-        source: "binance_spot",
+        source: result.source,
         updatedAt: new Date().toISOString(),
       },
       cacheSeconds: MARKET_CACHE_SECONDS,

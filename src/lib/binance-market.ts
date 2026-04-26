@@ -1,9 +1,8 @@
 import { z } from "zod";
 
-export const BINANCE_SPOT_BASE_URL = "https://api.binance.com";
-
 export const supportedCryptoSymbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT"] as const;
 export const supportedCryptoIntervals = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
+export type BinanceMarketSource = "binance_spot" | "binance_market_data";
 
 export const marketQuerySchema = z.object({
   symbol: z
@@ -34,7 +33,7 @@ export type MarketCandle = {
 export type MarketTicker = {
   symbol: string;
   price: number;
-  source: "binance_spot";
+  source: BinanceMarketSource;
   updatedAt: string;
 };
 

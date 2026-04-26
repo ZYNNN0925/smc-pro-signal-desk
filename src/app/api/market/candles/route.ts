@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { BINANCE_SPOT_BASE_URL, marketQuerySchema, parseBinanceKline } from "@/lib/binance-market";
+import { marketQuerySchema, parseBinanceKline } from "@/lib/binance-market";
+import { fetchBinanceMarketJson } from "@/lib/binance-market-server";
 
 export const dynamic = "force-dynamic";
 const MARKET_CACHE_SECONDS = 15;
@@ -16,31 +17,25 @@ export async function GET(request: NextRequest) {
   }
 
   const { symbol, interval, limit } = parsed.data;
-  const url = new URL("/api/v3/klines", BINANCE_SPOT_BASE_URL);
-  url.searchParams.set("symbol", symbol);
-  url.searchParams.set("interval", interval);
-  url.searchParams.set("limit", String(limit));
+  const result = await fetchBinanceMarketJson<unknown[][]>(
+    "/api/v3/klines",
+    { symbol, interval, limit: String(limit) },
+    { cacheSeconds: MARKET_CACHE_SECONDS, timeoutMs: BINANCE_TIMEOUT_MS },
+  );
 
-  const response = await fetch(url, {
-    headers: { accept: "application/json" },
-    next: { revalidate: MARKET_CACHE_SECONDS },
-    signal: AbortSignal.timeout(BINANCE_TIMEOUT_MS),
-  }).catch(() => null);
-
-  if (!response?.ok) {
+  if (!result.ok) {
     return NextResponse.json(
-      { ok: false, error: "binance candles request failed", status: response?.status || 504 },
+      { ok: false, error: "binance candles request failed", status: result.status, source: result.source },
       { status: 502 },
     );
   }
 
-  const raw = (await response.json()) as unknown[][];
-  const candles = raw.map(parseBinanceKline);
+  const candles = result.data.map(parseBinanceKline);
 
   return NextResponse.json(
     {
       ok: true,
-      source: "binance_spot",
+      source: result.source,
       symbol,
       interval,
       candles,
