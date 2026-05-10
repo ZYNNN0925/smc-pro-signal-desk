@@ -1,5 +1,5 @@
 //@version=5
-strategy("SMC PRO - ICT Model v0.5", overlay=true, pyramiding=0,
+strategy("SMC PRO - Practical ICT Model v0.6", overlay=true, pyramiding=0,
      process_orders_on_close=true,
      default_qty_type=strategy.percent_of_equity,
      default_qty_value=1,
@@ -9,58 +9,66 @@ strategy("SMC PRO - ICT Model v0.5", overlay=true, pyramiding=0,
 
 // ===== Core settings =====
 pivot_len = input.int(5, "Swing Pivot Length", minval=1)
-rr = input.float(2.0, "Final TP RR", minval=0.5, step=0.1)
+rr = input.float(2.0, "Fallback Fixed RR", minval=0.5, step=0.1)
 tp1_rr = input.float(1.0, "TP1 RR", minval=0.25, step=0.25)
 use_partial_tp = input.bool(true, "Use TP1 Partial Exit")
 tp1_qty_pct = input.float(50, "TP1 Exit Qty %", minval=1, maxval=99)
-max_wait_after_sweep = input.int(10, "Max Bars Sweep -> MSS", minval=1)
-min_bars_after_sweep = input.int(1, "Min Bars Sweep -> MSS", minval=0)
-max_wait_after_mss = input.int(12, "Max Bars MSS -> Entry", minval=1)
-body_ratio = input.float(0.55, "Min Displacement Body %", minval=0.1, maxval=1.0)
+move_runner_to_be = input.bool(true, "Move Runner SL To BE After TP1")
+max_wait_after_sweep = input.int(12, "Max Bars Sweep -> MSS", minval=1)
+min_bars_after_sweep = input.int(0, "Min Bars Sweep -> MSS", minval=0)
+max_wait_after_mss = input.int(16, "Max Bars MSS -> Entry", minval=1)
+body_ratio = input.float(0.5, "Min Displacement Body %", minval=0.1, maxval=1.0)
+min_confidence = input.int(62, "Min Signal Confidence", minval=0, maxval=95)
 webhook_secret = input.string("change-me", "Webhook Secret")
 send_alert_function = input.bool(true, "Send alert() Webhook")
 
 // ===== ICT / SMC model =====
-entry_model = input.string("FVG Retest", "ICT Entry Model", options=["FVG Retest", "MSS Close"])
-use_fvg_filter = input.bool(true, "Require FVG On MSS Candle")
+entry_model = input.string("FVG or OB Retest", "ICT Entry Model", options=["FVG or OB Retest", "FVG Retest", "OB Retest", "MSS Close"])
+fvg_mode = input.string("Soft", "FVG Requirement", options=["Off", "Soft", "Hard"])
 use_fvg_ce = input.bool(true, "Enter At FVG Consequent Encroachment")
-min_fvg_atr = input.float(0.05, "Min FVG Size ATR", minval=0.0, step=0.01)
-use_pd_filter = input.bool(true, "Use Premium / Discount Filter")
-long_max_pd_position = input.float(0.62, "Long Max Dealing Range Position", minval=0.1, maxval=1.0, step=0.01)
-short_min_pd_position = input.float(0.38, "Short Min Dealing Range Position", minval=0.0, maxval=0.9, step=0.01)
-order_block_lookback = input.int(10, "Order Block Lookback", minval=1, maxval=50)
+min_fvg_atr = input.float(0.03, "Min FVG Size ATR", minval=0.0, step=0.01)
+pd_mode = input.string("Soft", "Premium / Discount Mode", options=["Off", "Soft", "Hard"])
+long_max_pd_position = input.float(0.7, "Long Max Dealing Range Position", minval=0.1, maxval=1.0, step=0.01)
+short_min_pd_position = input.float(0.3, "Short Min Dealing Range Position", minval=0.0, maxval=0.9, step=0.01)
+order_block_lookback = input.int(12, "Order Block Lookback", minval=1, maxval=50)
+ob_entry_mode = input.string("Body", "Order Block Entry Zone", options=["Body", "Wick"])
+
+// ===== Target model =====
+target_mode = input.string("Liquidity or RR", "TP Target Model", options=["Fixed RR", "Liquidity Target", "Liquidity or RR"])
+target_lookback = input.int(80, "External Liquidity Lookback", minval=20, maxval=500)
+min_target_rr = input.float(1.25, "Min Target RR", minval=0.5, step=0.05)
 
 // ===== Trend filters =====
 ema_len = input.int(50, "Local EMA Length", minval=1)
-use_ema_filter = input.bool(true, "Use Local EMA Filter")
-use_ema_slope_filter = input.bool(true, "Use EMA Slope Filter")
+ema_mode = input.string("Soft", "Local EMA Mode", options=["Off", "Soft", "Hard"])
+use_ema_slope_filter = input.bool(true, "Use EMA Slope")
 ema_slope_len = input.int(3, "EMA Slope Lookback", minval=1)
-use_htf_filter = input.bool(true, "Use Confirmed HTF Bias")
+htf_mode = input.string("Soft", "Confirmed HTF Bias Mode", options=["Off", "Soft", "Hard"])
 htf = input.timeframe("60", "HTF Bias Timeframe")
 htf_ema_len = input.int(100, "HTF EMA Length", minval=1)
 
 // ===== Session and market quality filters =====
 use_session_filter = input.bool(false, "Use Trade Session Filter")
 trade_session = input.session("0800-2300", "Trade Session")
-use_killzone_filter = input.bool(false, "Use ICT Killzones")
+killzone_mode = input.string("Off", "ICT Killzone Mode", options=["Off", "Soft", "Hard"])
 london_killzone = input.session("0700-1000", "London Killzone")
 ny_killzone = input.session("1230-1600", "New York Killzone")
 atr_len = input.int(14, "ATR Length", minval=1)
 atr_buffer = input.float(0.2, "ATR SL Buffer", minval=0.0, step=0.1)
-sweep_atr_buffer = input.float(0.05, "Sweep ATR Buffer", minval=0.0, step=0.01)
-mss_atr_buffer = input.float(0.02, "MSS Break ATR Buffer", minval=0.0, step=0.01)
-min_atr_pct = input.float(0.05, "Min ATR %", minval=0.0, step=0.01)
-max_atr_pct = input.float(2.0, "Max ATR %", minval=0.1, step=0.1)
+sweep_atr_buffer = input.float(0.03, "Sweep ATR Buffer", minval=0.0, step=0.01)
+mss_atr_buffer = input.float(0.01, "MSS Break ATR Buffer", minval=0.0, step=0.01)
+min_atr_pct = input.float(0.04, "Min ATR %", minval=0.0, step=0.01)
+max_atr_pct = input.float(2.5, "Max ATR %", minval=0.1, step=0.1)
 use_displacement_filter = input.bool(true, "Use Displacement Filter")
-displacement_atr_mult = input.float(0.35, "Min Displacement Range ATR", minval=0.0, step=0.05)
+displacement_atr_mult = input.float(0.25, "Min Displacement Range ATR", minval=0.0, step=0.05)
 use_volume_filter = input.bool(false, "Use Volume Filter")
 volume_len = input.int(20, "Volume MA Length", minval=1)
 min_volume_mult = input.float(0.8, "Min Volume x MA", minval=0.0, step=0.1)
 
 // ===== Risk filters =====
-min_stop_pct = input.float(0.05, "Min Stop %", minval=0.0, step=0.01)
-max_stop_pct = input.float(1.2, "Max Stop %", minval=0.1, step=0.1)
-cooldown_bars = input.int(20, "Cooldown Bars After Signal", minval=0)
+min_stop_pct = input.float(0.04, "Min Stop %", minval=0.0, step=0.01)
+max_stop_pct = input.float(1.6, "Max Stop %", minval=0.1, step=0.1)
+cooldown_bars = input.int(12, "Cooldown Bars After Signal", minval=0)
 
 // ===== Trend and quality =====
 ema = ta.ema(close, ema_len)
@@ -72,17 +80,20 @@ htf_close = request.security(syminfo.tickerid, htf, close[1], barmerge.gaps_off,
 htf_ema = request.security(syminfo.tickerid, htf, ta.ema(close, htf_ema_len)[1], barmerge.gaps_off, barmerge.lookahead_on)
 htf_bull = htf_close > htf_ema
 htf_bear = htf_close < htf_ema
-htf_trend = not use_htf_filter ? "disabled" : htf_bull ? "bull" : htf_bear ? "bear" : "neutral"
+htf_trend = htf_mode == "Off" ? "disabled" : htf_bull ? "bull" : htf_bear ? "bear" : "neutral"
 
-local_bull = (not use_ema_filter or close > ema) and (not use_ema_slope_filter or ema > ema[ema_slope_len])
-local_bear = (not use_ema_filter or close < ema) and (not use_ema_slope_filter or ema < ema[ema_slope_len])
-trend_long_ok = local_bull and (not use_htf_filter or htf_bull)
-trend_short_ok = local_bear and (not use_htf_filter or htf_bear)
+ema_bull = close > ema and (not use_ema_slope_filter or ema > ema[ema_slope_len])
+ema_bear = close < ema and (not use_ema_slope_filter or ema < ema[ema_slope_len])
+ema_long_hard_ok = ema_mode != "Hard" or ema_bull
+ema_short_hard_ok = ema_mode != "Hard" or ema_bear
+htf_long_hard_ok = htf_mode != "Hard" or htf_bull
+htf_short_hard_ok = htf_mode != "Hard" or htf_bear
 
 in_session = not use_session_filter or not na(time(timeframe.period, trade_session))
 in_london_kz = not na(time(timeframe.period, london_killzone))
 in_ny_kz = not na(time(timeframe.period, ny_killzone))
-in_killzone = not use_killzone_filter or in_london_kz or in_ny_kz
+in_killzone_now = in_london_kz or in_ny_kz
+killzone_hard_ok = killzone_mode != "Hard" or in_killzone_now
 vol_ok = not na(atr_pct) and atr_pct >= min_atr_pct and atr_pct <= max_atr_pct
 volume_ma = ta.sma(volume, volume_len)
 volume_ok = not use_volume_filter or (not na(volume_ma) and volume >= volume_ma * min_volume_mult)
@@ -112,35 +123,37 @@ bullish_fvg = not na(high[2]) and low > high[2]
 bearish_fvg = not na(low[2]) and high < low[2]
 bullish_fvg_size = bullish_fvg ? low - high[2] : 0.0
 bearish_fvg_size = bearish_fvg ? low[2] - high : 0.0
-bullish_fvg_ok = not use_fvg_filter or (bullish_fvg and bullish_fvg_size >= atr * min_fvg_atr)
-bearish_fvg_ok = not use_fvg_filter or (bearish_fvg and bearish_fvg_size >= atr * min_fvg_atr)
+bullish_fvg_valid = bullish_fvg and bullish_fvg_size >= atr * min_fvg_atr
+bearish_fvg_valid = bearish_fvg and bearish_fvg_size >= atr * min_fvg_atr
+fvg_long_hard_ok = fvg_mode != "Hard" or bullish_fvg_valid
+fvg_short_hard_ok = fvg_mode != "Hard" or bearish_fvg_valid
 
-find_bullish_ob_low(max_bars) =>
+find_bullish_ob_low(max_bars, use_body) =>
     float level = na
     for i = 1 to max_bars
         if na(level) and close[i] < open[i]
-            level := low[i]
+            level := use_body ? math.min(open[i], close[i]) : low[i]
     level
 
-find_bullish_ob_high(max_bars) =>
+find_bullish_ob_high(max_bars, use_body) =>
     float level = na
     for i = 1 to max_bars
         if na(level) and close[i] < open[i]
-            level := high[i]
+            level := use_body ? math.max(open[i], close[i]) : high[i]
     level
 
-find_bearish_ob_low(max_bars) =>
+find_bearish_ob_low(max_bars, use_body) =>
     float level = na
     for i = 1 to max_bars
         if na(level) and close[i] > open[i]
-            level := low[i]
+            level := use_body ? math.min(open[i], close[i]) : low[i]
     level
 
-find_bearish_ob_high(max_bars) =>
+find_bearish_ob_high(max_bars, use_body) =>
     float level = na
     for i = 1 to max_bars
         if na(level) and close[i] > open[i]
-            level := high[i]
+            level := use_body ? math.max(open[i], close[i]) : high[i]
     level
 
 // ===== Liquidity sweep state =====
@@ -205,7 +218,7 @@ bear_break_level = not na(short_mss_level) ? short_mss_level - atr * mss_atr_buf
 bull_mss = sweep_low_ready and not na(bull_break_level) and close > bull_break_level and close[1] <= nz(bull_break_level[1], bull_break_level)
 bear_mss = sweep_high_ready and not na(bear_break_level) and close < bear_break_level and close[1] >= nz(bear_break_level[1], bear_break_level)
 
-// ===== Pending ICT setups =====
+// ===== Pending SMC / ICT setups =====
 var bool long_setup = false
 var bool short_setup = false
 var int long_setup_bar = na
@@ -228,14 +241,29 @@ var float short_ob_low = na
 var float short_ob_high = na
 var bool long_setup_has_fvg = false
 var bool short_setup_has_fvg = false
+var bool long_setup_has_ob = false
+var bool short_setup_has_ob = false
 var int last_signal_bar = na
+var float active_long_entry = na
+var float active_long_sl = na
+var float active_long_tp1 = na
+var float active_long_tp = na
+var float active_long_rr = na
+var bool active_long_tp1_hit = false
+var float active_short_entry = na
+var float active_short_sl = na
+var float active_short_tp1 = na
+var float active_short_tp = na
+var float active_short_rr = na
+var bool active_short_tp1_hit = false
 
 cooldown_ok = na(last_signal_bar) or bar_index - last_signal_bar >= cooldown_bars
 
-base_quality_long = barstate.isconfirmed and cooldown_ok and strategy.position_size == 0 and in_session and in_killzone and vol_ok and volume_ok and trend_long_ok
-base_quality_short = barstate.isconfirmed and cooldown_ok and strategy.position_size == 0 and in_session and in_killzone and vol_ok and volume_ok and trend_short_ok
-long_setup_trigger = base_quality_long and bull_mss and strong_bull and bullish_fvg_ok
-short_setup_trigger = base_quality_short and bear_mss and strong_bear and bearish_fvg_ok
+base_quality_long = barstate.isconfirmed and cooldown_ok and strategy.position_size == 0 and in_session and killzone_hard_ok and vol_ok and volume_ok and ema_long_hard_ok and htf_long_hard_ok
+base_quality_short = barstate.isconfirmed and cooldown_ok and strategy.position_size == 0 and in_session and killzone_hard_ok and vol_ok and volume_ok and ema_short_hard_ok and htf_short_hard_ok
+long_setup_trigger = base_quality_long and bull_mss and strong_bull and fvg_long_hard_ok
+short_setup_trigger = base_quality_short and bear_mss and strong_bear and fvg_short_hard_ok
+use_body_ob = ob_entry_mode == "Body"
 
 if long_setup_trigger
     long_setup := true
@@ -244,13 +272,15 @@ if long_setup_trigger
     long_setup_sl := swept_low_price - nz(swept_low_atr, atr) * atr_buffer
     long_dealing_low := swept_low_price
     long_dealing_high := high
-    long_fvg_bottom := bullish_fvg ? high[2] : low
-    long_fvg_top := bullish_fvg ? low : high
-    long_fvg_mid := (long_fvg_bottom + long_fvg_top) / 2.0
-    long_ob_low := find_bullish_ob_low(order_block_lookback)
-    long_ob_high := find_bullish_ob_high(order_block_lookback)
-    long_setup_has_fvg := bullish_fvg_ok
+    long_fvg_bottom := bullish_fvg_valid ? high[2] : na
+    long_fvg_top := bullish_fvg_valid ? low : na
+    long_fvg_mid := bullish_fvg_valid ? (long_fvg_bottom + long_fvg_top) / 2.0 : na
+    long_ob_low := find_bullish_ob_low(order_block_lookback, use_body_ob)
+    long_ob_high := find_bullish_ob_high(order_block_lookback, use_body_ob)
+    long_setup_has_fvg := bullish_fvg_valid
+    long_setup_has_ob := not na(long_ob_low) and not na(long_ob_high)
     short_setup_has_fvg := false
+    short_setup_has_ob := false
     swept_low := false
     swept_low_bar := na
     swept_low_price := na
@@ -264,13 +294,15 @@ if short_setup_trigger
     short_setup_sl := swept_high_price + nz(swept_high_atr, atr) * atr_buffer
     short_dealing_high := swept_high_price
     short_dealing_low := low
-    short_fvg_top := bearish_fvg ? low[2] : low
-    short_fvg_bottom := bearish_fvg ? high : low
-    short_fvg_mid := (short_fvg_bottom + short_fvg_top) / 2.0
-    short_ob_low := find_bearish_ob_low(order_block_lookback)
-    short_ob_high := find_bearish_ob_high(order_block_lookback)
-    short_setup_has_fvg := bearish_fvg_ok
+    short_fvg_top := bearish_fvg_valid ? low[2] : na
+    short_fvg_bottom := bearish_fvg_valid ? high : na
+    short_fvg_mid := bearish_fvg_valid ? (short_fvg_bottom + short_fvg_top) / 2.0 : na
+    short_ob_low := find_bearish_ob_low(order_block_lookback, use_body_ob)
+    short_ob_high := find_bearish_ob_high(order_block_lookback, use_body_ob)
+    short_setup_has_fvg := bearish_fvg_valid
+    short_setup_has_ob := not na(short_ob_low) and not na(short_ob_high)
     long_setup_has_fvg := false
+    long_setup_has_ob := false
     swept_high := false
     swept_high_bar := na
     swept_high_price := na
@@ -280,10 +312,12 @@ if short_setup_trigger
 if long_setup and (bar_index - long_setup_bar > max_wait_after_mss or low <= long_setup_sl)
     long_setup := false
     long_setup_has_fvg := false
+    long_setup_has_ob := false
 
 if short_setup and (bar_index - short_setup_bar > max_wait_after_mss or high >= short_setup_sl)
     short_setup := false
     short_setup_has_fvg := false
+    short_setup_has_ob := false
 
 // ===== Entry and risk =====
 safe_tp1_rr = math.min(tp1_rr, rr)
@@ -299,32 +333,52 @@ short_stop_pct = not na(short_risk) and short_entry != 0 ? short_risk / short_en
 risk_ok_long = not na(long_stop_pct) and long_risk > syminfo.mintick and long_stop_pct >= min_stop_pct and long_stop_pct <= max_stop_pct
 risk_ok_short = not na(short_stop_pct) and short_risk > syminfo.mintick and short_stop_pct >= min_stop_pct and short_stop_pct <= max_stop_pct
 
+buy_side_liquidity = ta.highest(high, target_lookback)[1]
+sell_side_liquidity = ta.lowest(low, target_lookback)[1]
+fixed_long_tp = not na(long_risk) ? long_entry + long_risk * rr : na
+fixed_short_tp = not na(short_risk) ? short_entry - short_risk * rr : na
+long_liquidity_tp = not na(buy_side_liquidity) and buy_side_liquidity > long_entry ? buy_side_liquidity : na
+short_liquidity_tp = not na(sell_side_liquidity) and sell_side_liquidity < short_entry ? sell_side_liquidity : na
+long_tp = target_mode == "Liquidity Target" ? nz(long_liquidity_tp, fixed_long_tp) : target_mode == "Liquidity or RR" ? math.max(fixed_long_tp, nz(long_liquidity_tp, fixed_long_tp)) : fixed_long_tp
+short_tp = target_mode == "Liquidity Target" ? nz(short_liquidity_tp, fixed_short_tp) : target_mode == "Liquidity or RR" ? math.min(fixed_short_tp, nz(short_liquidity_tp, fixed_short_tp)) : fixed_short_tp
+long_target_rr = not na(long_risk) and long_risk > syminfo.mintick ? (long_tp - long_entry) / long_risk : na
+short_target_rr = not na(short_risk) and short_risk > syminfo.mintick ? (short_entry - short_tp) / short_risk : na
+target_ok_long = not na(long_target_rr) and long_target_rr >= min_target_rr
+target_ok_short = not na(short_target_rr) and short_target_rr >= min_target_rr
+
 long_dealing_range = long_dealing_high - long_dealing_low
 short_dealing_range = short_dealing_high - short_dealing_low
 long_pd_position = long_dealing_range > syminfo.mintick ? (close - long_dealing_low) / long_dealing_range : na
 short_pd_position = short_dealing_range > syminfo.mintick ? (close - short_dealing_low) / short_dealing_range : na
-pd_ok_long = not use_pd_filter or (not na(long_pd_position) and long_pd_position <= long_max_pd_position)
-pd_ok_short = not use_pd_filter or (not na(short_pd_position) and short_pd_position >= short_min_pd_position)
+pd_ok_long = pd_mode == "Off" or (not na(long_pd_position) and long_pd_position <= long_max_pd_position)
+pd_ok_short = pd_mode == "Off" or (not na(short_pd_position) and short_pd_position >= short_min_pd_position)
+pd_hard_ok_long = pd_mode != "Hard" or pd_ok_long
+pd_hard_ok_short = pd_mode != "Hard" or pd_ok_short
 
 long_fvg_target = use_fvg_ce ? long_fvg_mid : long_fvg_top
 short_fvg_target = use_fvg_ce ? short_fvg_mid : short_fvg_bottom
-long_fvg_retest = long_setup and entry_model == "FVG Retest" and bar_index > long_setup_bar and low <= long_fvg_target and close > long_fvg_bottom and close > open
-short_fvg_retest = short_setup and entry_model == "FVG Retest" and bar_index > short_setup_bar and high >= short_fvg_target and close < short_fvg_top and close < open
+long_fvg_retest = long_setup and long_setup_has_fvg and bar_index > long_setup_bar and low <= long_fvg_target and close > long_fvg_bottom and close > open
+short_fvg_retest = short_setup and short_setup_has_fvg and bar_index > short_setup_bar and high >= short_fvg_target and close < short_fvg_top and close < open
+long_ob_retest = long_setup and long_setup_has_ob and bar_index > long_setup_bar and low <= long_ob_high and close >= long_ob_low and close > open
+short_ob_retest = short_setup and short_setup_has_ob and bar_index > short_setup_bar and high >= short_ob_low and close <= short_ob_high and close < open
 long_mss_close_entry = long_setup_trigger and entry_model == "MSS Close"
 short_mss_close_entry = short_setup_trigger and entry_model == "MSS Close"
-pd_entry_ok_long = entry_model == "MSS Close" ? true : pd_ok_long
-pd_entry_ok_short = entry_model == "MSS Close" ? true : pd_ok_short
 
-long_condition = barstate.isconfirmed and strategy.position_size == 0 and risk_ok_long and pd_entry_ok_long and (long_mss_close_entry or long_fvg_retest)
-short_condition = barstate.isconfirmed and strategy.position_size == 0 and risk_ok_short and pd_entry_ok_short and (short_mss_close_entry or short_fvg_retest)
+long_retest_entry = entry_model == "FVG Retest" ? long_fvg_retest : entry_model == "OB Retest" ? long_ob_retest : entry_model == "FVG or OB Retest" ? (long_fvg_retest or long_ob_retest) : false
+short_retest_entry = entry_model == "FVG Retest" ? short_fvg_retest : entry_model == "OB Retest" ? short_ob_retest : entry_model == "FVG or OB Retest" ? (short_fvg_retest or short_ob_retest) : false
+
+long_quality_score = 35 + (ema_bull and ema_mode != "Off" ? 8 : 0) + (htf_bull and htf_mode != "Off" ? 10 : 0) + (long_setup_has_fvg or bullish_fvg_valid ? 10 : 0) + (long_setup_has_ob ? 8 : 0) + (pd_ok_long and pd_mode != "Off" ? 8 : 0) + (in_killzone_now and killzone_mode != "Off" ? 6 : 0) + (target_ok_long ? 10 : 0) + (risk_ok_long ? 8 : 0) + (volume_ok ? 5 : 0)
+short_quality_score = 35 + (ema_bear and ema_mode != "Off" ? 8 : 0) + (htf_bear and htf_mode != "Off" ? 10 : 0) + (short_setup_has_fvg or bearish_fvg_valid ? 10 : 0) + (short_setup_has_ob ? 8 : 0) + (pd_ok_short and pd_mode != "Off" ? 8 : 0) + (in_killzone_now and killzone_mode != "Off" ? 6 : 0) + (target_ok_short ? 10 : 0) + (risk_ok_short ? 8 : 0) + (volume_ok ? 5 : 0)
+long_confidence = math.min(95, long_quality_score)
+short_confidence = math.min(95, short_quality_score)
+confidence_ok_long = long_confidence >= min_confidence
+confidence_ok_short = short_confidence >= min_confidence
+
+long_condition = barstate.isconfirmed and strategy.position_size == 0 and risk_ok_long and target_ok_long and pd_hard_ok_long and confidence_ok_long and (long_mss_close_entry or long_retest_entry)
+short_condition = barstate.isconfirmed and strategy.position_size == 0 and risk_ok_short and target_ok_short and pd_hard_ok_short and confidence_ok_short and (short_mss_close_entry or short_retest_entry)
 
 long_tp1 = not na(long_risk) ? long_entry + long_risk * safe_tp1_rr : na
 short_tp1 = not na(short_risk) ? short_entry - short_risk * safe_tp1_rr : na
-long_tp = not na(long_risk) ? long_entry + long_risk * rr : na
-short_tp = not na(short_risk) ? short_entry - short_risk * rr : na
-
-long_confidence = math.min(95, 35 + (trend_long_ok ? 10 : 0) + (bull_mss or long_setup ? 15 : 0) + (long_setup_has_fvg or bullish_fvg_ok ? 15 : 0) + (pd_entry_ok_long ? 10 : 0) + (in_killzone ? 5 : 0) + (risk_ok_long ? 10 : 0))
-short_confidence = math.min(95, 35 + (trend_short_ok ? 10 : 0) + (bear_mss or short_setup ? 15 : 0) + (short_setup_has_fvg or bearish_fvg_ok ? 15 : 0) + (pd_entry_ok_short ? 10 : 0) + (in_killzone ? 5 : 0) + (risk_ok_short ? 10 : 0))
 
 json_escape(value) =>
     str.replace_all(str.replace_all(value, "\\", "\\\\"), "\"", "\\\"")
@@ -335,14 +389,14 @@ json_text(value) =>
 json_num(value) =>
     str.tostring(value, "#.########")
 
-build_payload(side, entry, sl, tp1, tp, risk_pct, confidence, reasons) =>
+build_payload(side, entry, sl, tp1, tp, risk_pct, target_rr, confidence, reasons) =>
     signal_id = "SMC_PRO:" + syminfo.tickerid + ":" + timeframe.period + ":" + str.tostring(time_close) + ":" + side
     "{" +
      "\"secret\":" + json_text(webhook_secret) +
      ",\"event\":\"signal_open\"" +
      ",\"signal_id\":" + json_text(signal_id) +
      ",\"strategy\":\"SMC_PRO\"" +
-     ",\"version\":\"0.5.0\"" +
+     ",\"version\":\"0.6.0\"" +
      ",\"symbol\":" + json_text(syminfo.tickerid) +
      ",\"timeframe\":" + json_text(timeframe.period) +
      ",\"side\":" + json_text(side) +
@@ -351,11 +405,12 @@ build_payload(side, entry, sl, tp1, tp, risk_pct, confidence, reasons) =>
      ",\"tp\":" + json_num(tp) +
      ",\"tp1\":" + json_num(tp1) +
      ",\"tp2\":" + json_num(tp) +
-     ",\"rr\":" + json_num(rr) +
+     ",\"rr\":" + json_num(target_rr) +
      ",\"risk_pct\":" + json_num(risk_pct) +
      ",\"atr_pct\":" + json_num(atr_pct) +
      ",\"htf_trend\":" + json_text(htf_trend) +
      ",\"entry_model\":" + json_text(entry_model) +
+     ",\"target_model\":" + json_text(target_mode) +
      ",\"session\":" + json_text(use_session_filter ? trade_session : "all") +
      ",\"killzone\":" + json_text(in_london_kz ? "london" : in_ny_kz ? "new_york" : "none") +
      ",\"confidence\":" + str.tostring(confidence) +
@@ -363,13 +418,27 @@ build_payload(side, entry, sl, tp1, tp, risk_pct, confidence, reasons) =>
      ",\"created_at\":" + str.tostring(time_close) +
      "}"
 
-long_reasons = entry_model == "FVG Retest" ? "[\"Sell-side Liquidity Sweep\",\"Bullish MSS\",\"Bullish FVG Retest\",\"Discount/OTE OK\",\"Risk OK\"]" : "[\"Sell-side Liquidity Sweep\",\"Bullish MSS\",\"Displacement FVG\",\"Risk OK\"]"
-short_reasons = entry_model == "FVG Retest" ? "[\"Buy-side Liquidity Sweep\",\"Bearish MSS\",\"Bearish FVG Retest\",\"Premium/OTE OK\",\"Risk OK\"]" : "[\"Buy-side Liquidity Sweep\",\"Bearish MSS\",\"Displacement FVG\",\"Risk OK\"]"
+long_entry_tag = long_mss_close_entry ? "MSS Close" : long_fvg_retest ? "FVG Retest" : "OB Retest"
+short_entry_tag = short_mss_close_entry ? "MSS Close" : short_fvg_retest ? "FVG Retest" : "OB Retest"
+long_reasons = "[\"Sell-side Liquidity Sweep\",\"Bullish MSS\",\"" + long_entry_tag + "\",\"Liquidity Target OK\",\"Risk OK\"]"
+short_reasons = "[\"Buy-side Liquidity Sweep\",\"Bearish MSS\",\"" + short_entry_tag + "\",\"Liquidity Target OK\",\"Risk OK\"]"
 
 if long_condition
-    payload = build_payload("long", long_entry, long_sl, long_tp1, long_tp, long_stop_pct, long_confidence, long_reasons)
+    payload = build_payload("long", long_entry, long_sl, long_tp1, long_tp, long_stop_pct, long_target_rr, long_confidence, long_reasons)
     strategy.entry("Long", strategy.long, alert_message=payload)
-    if use_partial_tp and safe_tp1_rr < rr
+    active_long_entry := long_entry
+    active_long_sl := long_sl
+    active_long_tp1 := long_tp1
+    active_long_tp := long_tp
+    active_long_rr := long_target_rr
+    active_long_tp1_hit := false
+    active_short_entry := na
+    active_short_sl := na
+    active_short_tp1 := na
+    active_short_tp := na
+    active_short_rr := na
+    active_short_tp1_hit := false
+    if use_partial_tp and safe_tp1_rr < long_target_rr
         strategy.exit("L TP1", "Long", stop=long_sl, limit=long_tp1, qty_percent=tp1_qty_pct)
         strategy.exit("L TP2", "Long", stop=long_sl, limit=long_tp, qty_percent=100 - tp1_qty_pct)
     else
@@ -378,12 +447,25 @@ if long_condition
         alert(payload, alert.freq_once_per_bar_close)
     long_setup := false
     long_setup_has_fvg := false
+    long_setup_has_ob := false
     last_signal_bar := bar_index
 
 if short_condition
-    payload = build_payload("short", short_entry, short_sl, short_tp1, short_tp, short_stop_pct, short_confidence, short_reasons)
+    payload = build_payload("short", short_entry, short_sl, short_tp1, short_tp, short_stop_pct, short_target_rr, short_confidence, short_reasons)
     strategy.entry("Short", strategy.short, alert_message=payload)
-    if use_partial_tp and safe_tp1_rr < rr
+    active_short_entry := short_entry
+    active_short_sl := short_sl
+    active_short_tp1 := short_tp1
+    active_short_tp := short_tp
+    active_short_rr := short_target_rr
+    active_short_tp1_hit := false
+    active_long_entry := na
+    active_long_sl := na
+    active_long_tp1 := na
+    active_long_tp := na
+    active_long_rr := na
+    active_long_tp1_hit := false
+    if use_partial_tp and safe_tp1_rr < short_target_rr
         strategy.exit("S TP1", "Short", stop=short_sl, limit=short_tp1, qty_percent=tp1_qty_pct)
         strategy.exit("S TP2", "Short", stop=short_sl, limit=short_tp, qty_percent=100 - tp1_qty_pct)
     else
@@ -392,7 +474,36 @@ if short_condition
         alert(payload, alert.freq_once_per_bar_close)
     short_setup := false
     short_setup_has_fvg := false
+    short_setup_has_ob := false
     last_signal_bar := bar_index
+
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    active_long_entry := na
+    active_long_sl := na
+    active_long_tp1 := na
+    active_long_tp := na
+    active_long_rr := na
+    active_long_tp1_hit := false
+    active_short_entry := na
+    active_short_sl := na
+    active_short_tp1 := na
+    active_short_tp := na
+    active_short_rr := na
+    active_short_tp1_hit := false
+
+if strategy.position_size > 0 and use_partial_tp and not na(active_long_tp1)
+    active_long_tp1_hit := active_long_tp1_hit or high >= active_long_tp1
+    long_runner_stop = move_runner_to_be and active_long_tp1_hit ? active_long_entry : active_long_sl
+    if safe_tp1_rr < active_long_rr
+        strategy.exit("L TP1", "Long", stop=active_long_sl, limit=active_long_tp1, qty_percent=tp1_qty_pct)
+        strategy.exit("L TP2", "Long", stop=long_runner_stop, limit=active_long_tp, qty_percent=100 - tp1_qty_pct)
+
+if strategy.position_size < 0 and use_partial_tp and not na(active_short_tp1)
+    active_short_tp1_hit := active_short_tp1_hit or low <= active_short_tp1
+    short_runner_stop = move_runner_to_be and active_short_tp1_hit ? active_short_entry : active_short_sl
+    if safe_tp1_rr < active_short_rr
+        strategy.exit("S TP1", "Short", stop=active_short_sl, limit=active_short_tp1, qty_percent=tp1_qty_pct)
+        strategy.exit("S TP2", "Short", stop=short_runner_stop, limit=active_short_tp, qty_percent=100 - tp1_qty_pct)
 
 plot(ema, "Local EMA", color=color.orange)
 plot(htf_ema, "Confirmed HTF EMA", color=color.new(color.blue, 35))
@@ -406,9 +517,11 @@ plot(long_setup ? long_ob_high : na, "Bullish OB High", color=color.new(color.te
 plot(long_setup ? long_ob_low : na, "Bullish OB Low", color=color.new(color.teal, 80), style=plot.style_linebr)
 plot(short_setup ? short_ob_high : na, "Bearish OB High", color=color.new(color.purple, 80), style=plot.style_linebr)
 plot(short_setup ? short_ob_low : na, "Bearish OB Low", color=color.new(color.purple, 80), style=plot.style_linebr)
+plot(buy_side_liquidity, "Buy-side Liquidity Target", color=color.new(color.lime, 85), style=plot.style_linebr)
+plot(sell_side_liquidity, "Sell-side Liquidity Target", color=color.new(color.red, 85), style=plot.style_linebr)
 plotshape(new_sweep_low, "Sell-side Sweep", shape.triangleup, location.belowbar, color=color.green, size=size.tiny)
 plotshape(new_sweep_high, "Buy-side Sweep", shape.triangledown, location.abovebar, color=color.red, size=size.tiny)
 plotshape(bull_mss, "Bullish MSS", shape.circle, location.belowbar, color=color.new(color.green, 0), size=size.tiny)
 plotshape(bear_mss, "Bearish MSS", shape.circle, location.abovebar, color=color.new(color.red, 0), size=size.tiny)
-plotshape(long_condition, "Long Entry", shape.labelup, location.belowbar, color=color.green, text="ICT LONG", textcolor=color.white)
-plotshape(short_condition, "Short Entry", shape.labeldown, location.abovebar, color=color.red, text="ICT SHORT", textcolor=color.white)
+plotshape(long_condition, "Long Entry", shape.labelup, location.belowbar, color=color.green, text="SMC LONG", textcolor=color.white)
+plotshape(short_condition, "Short Entry", shape.labeldown, location.abovebar, color=color.red, text="SMC SHORT", textcolor=color.white)
